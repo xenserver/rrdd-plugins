@@ -40,23 +40,19 @@ PRODUCT_BRAND=$(getenv PRODUCT_BRAND, unknown)
 BUILD_NUMBER=$(getenv BUILD_NUMBER, -1)
 export
 
-OCAMLPACKS = str xenctrl xenstore-watch rrd-client
+OCAMLPACKS = str xenctrl xenstore-watch rrdd-plugin
 
 RRDP_DUMMY = rrdp_dummy
 RRDP_DUMMY_FILES = \
-	rrdp_common \
 	rrdp_dummy
 RRDP_IOSTAT = rrdp_iostat
 RRDP_IOSTAT_FILES = \
-	rrdp_common \
 	rrdp_iostat
 RRDP_XENPM = rrdp_xenpm
 RRDP_XENPM_FILES = \
-	rrdp_common \
 	rrdp_xenpm
 RRDP_SQUEEZED = rrdp_squeezed
 RRDP_SQUEEZED_FILES = \
-	rrdp_common \
 	rrdp_squeezed
 
 # OCamlProgram($(RRDP_DUMMY), $(RRDP_DUMMY_FILES))
