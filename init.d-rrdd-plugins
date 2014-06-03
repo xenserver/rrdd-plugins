@@ -27,6 +27,9 @@ PID_PREFIX="/var/run/"
 # lock file
 SUBSYS_PREFIX="/var/lock/subsys/"
 
+# Enable core dumping
+ulimit -c unlimited
+
 start() {
 	WORST_RETVAL=0
 	for NAME in ${PLUGINS}; do
