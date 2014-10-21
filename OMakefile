@@ -42,11 +42,16 @@ export
 
 OCAMLPACKS = str xenctrl xenstore-watch rrdd-plugin
 
+OCAML_CLIBS = blktap3_stats_stubs
+StaticCLibrary(blktap3_stats_stubs, blktap3_stats_stubs)
+CFLAGS+=-I$(shell ocamlc -where)
+
 RRDP_DUMMY = rrdp_dummy
 RRDP_DUMMY_FILES = \
 	rrdp_dummy
 RRDP_IOSTAT = rrdp_iostat
 RRDP_IOSTAT_FILES = \
+	blktap3_stats \
 	rrdp_iostat
 RRDP_XENPM = rrdp_xenpm
 RRDP_XENPM_FILES = \
