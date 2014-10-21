@@ -20,6 +20,7 @@ open Unixext
 open Threadext
 
 open Rrdp_common
+open Blktap3_stats
 
 module Common = Common(struct let name="xcp-rrdd-iostat" end)
 open Common
@@ -315,20 +316,21 @@ let get_sr_to_stats_summed_fun ~stats ~sum_fun ~sum_init =
 let get_sr_to_stats_summed sr_vdi_to_stats = get_sr_to_stats_summed_fun ~stats:sr_vdi_to_stats ~sum_fun:(Int64.add) ~sum_init:[0L;0L;0L;0L;0L;0L;0L;0L;0L;0L;0L;0L;0L;0L;0L]
 let get_sr_to_iostats_summed sr_vdi_to_iostats = get_sr_to_stats_summed_fun ~stats:sr_vdi_to_iostats ~sum_fun:(+.) ~sum_init:[0.;0.;0.;0.;0.;0.;0.;0.;0.;0.;0.;]
 
-let gen_metric_stat ~owner ~name ~key_format (stats, _) =
+let gen_metric_stat ~owner ~name ~key_format (stats, stats_blktap3, _) =
 	let ds_make = Ds.ds_make ~default:true
 	and stats_get = List.nth stats in
-	let io_throughput_read = stats_get 13
-	and io_throughput_write = stats_get 14 in
+	let s3 = stats_blktap3 in
+	let io_throughput_read = Int64.add (stats_get 13) (Int64.mul s3.st_rd_sect 512L)
+	and io_throughput_write = Int64.add (stats_get 14) (Int64.mul s3.st_wr_sect 512L)  in
 	let io_throughput_total = Int64.add io_throughput_read io_throughput_write in
 	let io_throughput_read_mb = Int64.to_float io_throughput_read /. 1048576.
 	and io_throughput_write_mb = Int64.to_float io_throughput_write /. 1048576. in
 	let io_throughput_total_mb = Int64.to_float io_throughput_total /. 1048576.
-	and iops_read = stats_get 0
-	and iops_write = stats_get 4 in
+	and iops_read = Int64.add (stats_get 0) s3.st_rd_cnt
+	and iops_write = Int64.add (stats_get 4) s3.st_wr_cnt in
 	let iops_total = Int64.add iops_read iops_write in
-	let iowait = Int64.to_float (stats_get 10) /. 1000.
-	and inflight = stats_get 8 in
+	let iowait = Int64.to_float (Int64.add (stats_get 10) (Int64.add s3.st_rd_sum_usecs s3.st_wr_sum_usecs)) /. 1000.
+	and inflight = Int64.add (stats_get 8) (Int64.add (Int64.sub s3.st_rd_req s3.st_rd_cnt) (Int64.sub s3.st_wr_req s3.st_wr_cnt)) in
 	[
 		ds_make ~name:(key_format "io_throughput_read")
 			~description:("Data read from the " ^ name ^ ", in MiB/s")
@@ -363,12 +365,14 @@ let gen_metric_stat ~owner ~name ~key_format (stats, _) =
 			~value:(Rrd.VT_Int64 inflight) 
 			~ty:Rrd.Gauge ~units:"requests" ~min:0. (), owner
 	]
-		
-let gen_metric_iostat ~owner ~name ~key_format (stats, nb_vdi) =
+
+let gen_metric_iostat ~owner ~name ~key_format (stats, stats_blktap3, nb_vdi) =
 	let ds_make = Ds.ds_make ~default:true
 	and stats_get = List.nth stats in
+	let s3 = stats_blktap3 in
 	let avgqu_sz = stats_get 7
-	and svctm    = (stats_get 9) /. (float_of_int nb_vdi) in
+	and svctm    = ((stats_get 9) +. ((Int64.to_float s3.st_rd_sum_usecs) +. (Int64.to_float s3.st_wr_sum_usecs)) /.
+					((Int64.to_float s3.st_rd_cnt) +. (Int64.to_float s3.st_wr_cnt)) /. 1000.0) /. (float_of_int nb_vdi) in
 	[
 		ds_make ~name:(key_format "latency")
 			~description:"Average I/O latency"
@@ -382,7 +386,98 @@ let gen_metric_iostat ~owner ~name ~key_format (stats, nb_vdi) =
 
 let list_all_assocs key xs = List.map snd (List.filter (fun (k,_) -> k = key) xs)
 
+let empty_stats_blktap3 =
+	{
+	st_ds_req       = 0L;
+	st_f_req        = 0L;
+	st_oo_req       = 0L;
+	st_rd_req       = 0L;
+	st_rd_cnt       = 0L;
+	st_rd_sect      = 0L;
+	st_rd_sum_usecs = 0L;
+	st_rd_max_usecs = 0L;
+	st_wr_req       = 0L;
+	st_wr_cnt       = 0L;
+	st_wr_sect      = 0L;
+	st_wr_sum_usecs = 0L;
+	st_wr_max_usecs = 0L;
+	}
+
+let get_domid_devid_to_stats_blktap3 () : ((int * int) * blktap3_stats) list =
+	let shm_devices_dir = "/dev/shm" in
+	let read_raw_blktap3_stats vbd =
+		try
+			let stat_file = Printf.sprintf "%s/%s/statistics" shm_devices_dir vbd in
+			(* Retrieve blktap3 statistics record *)
+			let stat_rec = get_blktap3_stats stat_file in
+			Some stat_rec
+		with _ ->
+			None
+	in
+	let shm_dirs = Array.to_list (Sys.readdir shm_devices_dir) in
+	let shm_vbds = List.filter (fun s -> String.startswith "vbd3-" s) shm_dirs in
+	List.fold_left (fun acc vbd ->
+		match read_raw_blktap3_stats vbd with
+		| Some stat ->
+			let domid, devid = Scanf.sscanf vbd "vbd3-%d-%d" (fun id devid -> (id, devid)) in
+			((domid, devid), stat) :: acc
+		| None -> acc
+	) [] shm_vbds
+
+let get_domid_devid_to_sr_blktap3 (domid_devids : (int * int) list) : ((int * int) * string) list =
+	try
+		with_xs (fun xs ->
+			List.fold_left (fun acc (domid, devid) ->
+				let path = Printf.sprintf "/local/domain/0/backend/vbd3/%d/%d/sm-data/mem-pool" domid devid in
+				let sr = xs.Xs.read path in
+				((domid, devid), sr) :: acc
+			) [] domid_devids
+		)
+	with e ->
+		D.error "Error while looking up the domid-devid to SR map: %s" (Printexc.to_string e);
+		[]
+
+let get_sr_to_stats_summed_blktap3 (domid_devid_to_stats : ((int * int) * blktap3_stats) list) (domid_devid_to_sr : ((int * int) * string) list) : (string * (blktap3_stats * int)) list =
+	let sum_up_stat s1 s2 =
+		{
+		st_ds_req       = Int64.add s1.st_ds_req       s2.st_ds_req;
+		st_f_req        = Int64.add s1.st_f_req        s2.st_f_req;
+		st_oo_req       = Int64.add s1.st_oo_req       s2.st_oo_req;
+		st_rd_req       = Int64.add s1.st_rd_req       s2.st_rd_req;
+		st_rd_cnt       = Int64.add s1.st_rd_cnt       s2.st_rd_cnt;
+		st_rd_sect      = Int64.add s1.st_rd_sect      s2.st_rd_sect;
+		st_rd_sum_usecs = Int64.add s1.st_rd_sum_usecs s2.st_rd_sum_usecs;
+		st_rd_max_usecs = Int64.add s1.st_rd_max_usecs s2.st_rd_max_usecs;
+		st_wr_req       = Int64.add s1.st_wr_req       s2.st_wr_req;
+		st_wr_cnt       = Int64.add s1.st_wr_cnt       s2.st_wr_cnt;
+		st_wr_sect      = Int64.add s1.st_wr_sect      s2.st_wr_sect;
+		st_wr_sum_usecs = Int64.add s1.st_wr_sum_usecs s2.st_wr_sum_usecs;
+		st_wr_max_usecs = Int64.add s1.st_wr_max_usecs s2.st_wr_max_usecs;
+		}
+	in
+	let module StringMap = Map.Make(struct type t = string let compare = compare end) in
+	let sr_to_stats_summed = ref StringMap.empty in
+	List.iter (fun (domid_devid, stat) ->
+		if List.mem_assoc domid_devid domid_devid_to_sr then
+			let sr = List.assoc domid_devid domid_devid_to_sr in
+			if StringMap.mem sr !sr_to_stats_summed then
+				let stat_nb_of_vdi = StringMap.find sr !sr_to_stats_summed in
+				let merged_stat = sum_up_stat (fst stat_nb_of_vdi) stat in
+				sr_to_stats_summed := StringMap.add sr (merged_stat, (snd stat_nb_of_vdi) + 1) !sr_to_stats_summed
+			else
+				sr_to_stats_summed := StringMap.add sr (stat, 1) !sr_to_stats_summed
+	) domid_devid_to_stats;
+	StringMap.bindings !sr_to_stats_summed
+
+let gen_sr_to_stats_blktap3 () =
+	let domid_devid_to_stats = get_domid_devid_to_stats_blktap3 () in
+	let domid_devid_to_sr = get_domid_devid_to_sr_blktap3 (List.map (fun (domid_devid, stats) -> domid_devid) domid_devid_to_stats) in
+	let sr_to_stats = get_sr_to_stats_summed_blktap3 domid_devid_to_stats domid_devid_to_sr in
+	sr_to_stats
+
 let gen_metrics () =
+	let sr_to_stats_blktap3 = gen_sr_to_stats_blktap3 () in
+
 	(* Get iostat data first, because this takes 1 second to complete *)
 	let sr_vdi_to_iostats = get_sr_vdi_to_iostats () in
 	let sr_vdi_to_stats   = get_sr_vdi_to_stats   () in
@@ -393,12 +488,14 @@ let gen_metrics () =
 	let data_sources_iostats = List.map (
 		fun (sr, (stats, nb_vdi)) ->
 			let key_format key = Printf.sprintf "%s_%s" key (String.sub sr 0 8) in
-			gen_metric_iostat ~owner:Rrd.Host ~name:"SR" ~key_format (stats, nb_vdi)
+			let stats_blktap3_nb_of_vdi = if List.mem_assoc sr sr_to_stats_blktap3 then List.assoc sr sr_to_stats_blktap3 else (empty_stats_blktap3, 0) in
+			gen_metric_iostat ~owner:Rrd.Host ~name:"SR" ~key_format (stats, fst stats_blktap3_nb_of_vdi, nb_vdi + (snd stats_blktap3_nb_of_vdi))
 		) sr_to_iostats in
 	let data_sources_stats   = List.map (
 		fun (sr, (stats, nb_vdi)) ->
 			let key_format key = Printf.sprintf "%s_%s" key (String.sub sr 0 8) in
-			gen_metric_stat ~owner:Rrd.Host ~name:"SR" ~key_format (stats, nb_vdi)
+			let stats_blktap3_nb_of_vdi = if List.mem_assoc sr sr_to_stats_blktap3 then List.assoc sr sr_to_stats_blktap3 else (empty_stats_blktap3, 0) in
+			gen_metric_stat ~owner:Rrd.Host ~name:"SR" ~key_format (stats, fst stats_blktap3_nb_of_vdi, nb_vdi + (snd stats_blktap3_nb_of_vdi))
 		) sr_to_stats in
 
 	let vdi_to_vm = get_vdi_to_vm_map () in
@@ -409,7 +506,7 @@ let gen_metrics () =
 		List.map (fun ((sr, vdi), stats) ->
 			let create_metrics (vm, pos) =
 				let key_format key = Printf.sprintf "vbd_%s_%s" pos key in
-				let stats = gen_metric_iostat ~owner:(Rrd.VM vm) ~name:"VDI" ~key_format (stats, 1) in
+				let stats = gen_metric_iostat ~owner:(Rrd.VM vm) ~name:"VDI" ~key_format (stats, empty_stats_blktap3, 1) in
 				(* Drop the latency metric -- this is already covered by vbd_DEV_{read,write}_latency provided by xcp-rrdd *)
 				List.tl stats in
 			let vms = list_all_assocs vdi vdi_to_vm in
@@ -419,7 +516,7 @@ let gen_metrics () =
 		List.map (fun ((sr, vdi), stats) ->
 			let create_metrics (vm, pos) =
 				let key_format key = Printf.sprintf "vbd_%s_%s" pos key in
-				let stats = gen_metric_stat ~owner:(Rrd.VM vm) ~name:"VDI" ~key_format (stats, 1) in
+				let stats = gen_metric_stat ~owner:(Rrd.VM vm) ~name:"VDI" ~key_format (stats, empty_stats_blktap3, 1) in
 				(* Drop the io_throughput_* metrics -- the read and write ones are already covered by vbd_DEV_{read,write} provided by xcp-rrdd *)
 				List.rev_chop 3 stats |> snd in
 			let vms = list_all_assocs vdi vdi_to_vm in
@@ -427,7 +524,7 @@ let gen_metrics () =
 		) sr_vdi_to_stats) in
 
 	List.flatten (data_sources_stats @ data_sources_iostats @ data_sources_vm_stats @ data_sources_vm_iostats)
-	
+
 let _ =
 	initialise ();
 	(* It takes (at least) 1 second to get the iostat data, so start reading the data early enough *)
