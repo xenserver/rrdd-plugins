@@ -56,7 +56,7 @@ module MemoryActions = struct
 
   let watch_token domid = Printf.sprintf "xcp-rrdd-plugins/squeezed:domain-%d" domid
 
-  let watch_fired _xc _ path domains _watches =
+  let watch_fired _xc _ path domains _watches _ =
     D.debug "Watch fired on %s" path;
     let read_new_value domid current_memory_values =
       let domid = int_of_string domid in
