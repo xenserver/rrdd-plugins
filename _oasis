@@ -19,7 +19,8 @@ Executable rrdp_iostat
   Path:                     src
   MainIs:                   rrdp_iostat.ml
   Install:                  false
-  BuildDepends:             rrdd-plugin,
+  BuildDepends:             mtime.os,
+                            rrdd-plugin,
                             rrdd-plugins-libs,
                             stdext,
                             str,
