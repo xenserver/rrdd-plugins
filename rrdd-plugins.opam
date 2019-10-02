@@ -11,6 +11,7 @@ synopsis: "Plugins registering to the RRD daemon and exposing various metrics"
 depends: [
   "ocaml"
   "dune" {build}
+  "astring"
   "base-threads"
   "base-unix"
   "cstruct-unix"
@@ -18,7 +19,6 @@ depends: [
   "inotify"
   "rrdd-plugin"
   "uuid"
-  "xapi-libs-transitional"
   "xapi-stdext-std"
   "xapi-stdext-unix"
   "xenctrl"
