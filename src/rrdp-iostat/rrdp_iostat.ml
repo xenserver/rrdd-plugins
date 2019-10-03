@@ -183,11 +183,11 @@ module Stat = struct
   type t = int64 list (* /sys/block/tdX/stats @ /sys/block/tdX/inflight @ [read bytes; write bytes] *)
 
   let get_unsafe_dev (dev : string) : t =
-    let path_root = "/sys/block/" ^ dev in
+    let path_root = Filename.concat "/sys/block" dev in
     let get_stats_from filename =
-      Unixext.read_lines (path_root ^ filename) |> List.hd |> Utils.cut |> List.map Int64.of_string in
+      Unixext.string_of_file (Filename.concat path_root filename) |> Utils.cut |> List.map Int64.of_string in
 
-    let hw_sector_size = Unixext.read_lines (path_root ^ "/queue/hw_sector_size") |> List.hd |> Int64.of_string in
+    let hw_sector_size = Unixext.string_of_file (Filename.concat path_root "queue/hw_sector_size") |> Int64.of_string in
     let stats = get_stats_from "stat" in
     let inflight_stats = get_stats_from "inflight" in
     let sectors_to_bytes = Int64.mul hw_sector_size in
@@ -303,11 +303,8 @@ let exec_tap_ctl () =
   minor_to_sr_and_vdi
 
 let minor_of_tdX_unsafe tdX =
-  Unixext.read_lines ("/sys/block/" ^ tdX ^ "/dev")
-  |> List.hd
-  |> Astring.String.cuts ~sep:":"
-  |> fun l -> List.nth l 1
-  |> int_of_string
+  Unixext.string_of_file ("/sys/block/" ^ tdX ^ "/dev")
+  |> fun dev -> Scanf.sscanf dev "%d:%d" (fun _major minor -> minor)
 
 let get_tdXs vdi_info_list =
   let tdXs = List.fold_left
