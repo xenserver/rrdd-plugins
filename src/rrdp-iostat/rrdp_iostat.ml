@@ -12,9 +12,9 @@
  * GNU Lesser General Public License for more details.
  *)
 
-open Xapi_stdext_std
-open Xapi_stdext_unix
-open Xapi_stdext_threads.Threadext
+module Listext = Xapi_stdext_std.Listext
+module Unixext = Xapi_stdext_unix.Unixext
+module Mutex = Xapi_stdext_threads.Threadext.Mutex
 module Pervasiveext = Xapi_stdext_pervasives.Pervasiveext
 
 open Rrdd_plugin
@@ -23,10 +23,9 @@ open Blktap3_stats
 module Process = Process(struct let name="xcp-rrdd-iostat" end)
 open Process
 
-(* Xenstore also exposes Client *)
 module XenAPI = Client.Client
 
-open Xenstore
+module Xs = Xenstore.Xs
 
 let with_xc f = Xenctrl.with_intf f
 
@@ -53,7 +52,7 @@ let update_vdi_to_vm_map () =
     try
       let domUs = with_xc get_running_domUs in
       D.debug "Running domUs: [%s]" (String.concat "; " (List.map (fun (domid, uuid) -> Printf.sprintf "%d (%s)" domid (String.sub uuid 0 8)) domUs));
-      with_xs (fun xs ->
+      Xenstore.with_xs (fun xs ->
           List.map (fun (domid, vm) ->
               (* Get VBDs for this domain *)
               let enoents = ref 0 in
@@ -340,7 +339,7 @@ module Blktap3_stats_wrapper = struct
   let get_stats () =
     let pid_from_xs (domid, devid) =
       try
-        let result = with_xs (fun xs ->
+        let result = Xenstore.with_xs (fun xs ->
             let path = Printf.sprintf "/local/domain/0/backend/vbd3/%d/%d/kthread-pid" domid devid in
             Some (int_of_string (xs.Xs.read path))) in
         result
