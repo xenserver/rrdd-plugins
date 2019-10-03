@@ -29,6 +29,11 @@ module Xs = Xenstore.Xs
 
 let with_xc f = Xenctrl.with_intf f
 
+let ( +++ ) = Int64.add
+let ( --- ) = Int64.sub
+let ( *** ) = Int64.mul
+let ( /// ) = Int64.div
+
 (* Return a list of (domid, uuid) pairs for domUs running on this host *)
 let get_running_domUs xc =
   let open Xenctrl in
@@ -474,7 +479,7 @@ module Stats_value = struct
     }
 
   let make stats last_stats stats_blktap3 last_stats_blktap3 : t =
-    let (++) = Int64.add and (--) = Int64.sub and to_float = Int64.to_float in
+    let to_float = Int64.to_float in
     (* stats_blktap3 and stats won't both present at a time *)
     match stats_blktap3 with
     | None ->
@@ -482,18 +487,18 @@ module Stats_value = struct
       let stats_diff_get n =
         let stat = stats_get n in
         let last_stat = match last_stats with | None -> 0L | Some s -> List.nth s n in
-        if stat >= last_stat then Int64.sub stat last_stat else stat
+        if stat >= last_stat then stat --- last_stat else stat
       in
       {
         rd_bytes = stats_diff_get 13;
         wr_bytes = stats_diff_get 14;
         rd_avg_usecs =
           if (stats_diff_get 0) > 0L then
-            Int64.div (stats_diff_get 3) (stats_diff_get 0)
+            (stats_diff_get 3) /// (stats_diff_get 0)
           else 0L;
         wr_avg_usecs =
           if (stats_diff_get 4) > 0L then
-            Int64.div (stats_diff_get 7) (stats_diff_get 4)
+            (stats_diff_get 7) /// (stats_diff_get 4)
           else 0L;
         io_throughput_read_mb = to_float (stats_diff_get 13) /. 1048576.;
         io_throughput_write_mb = to_float (stats_diff_get 14) /. 1048576.;
@@ -507,38 +512,37 @@ module Stats_value = struct
       let opt f x = match x with None -> 0L | Some x' -> f x' in
       let open Blktap3_stats in
       {
-        rd_bytes = Int64.mul (get_stats_read_sectors s3) 512L;
-        wr_bytes = Int64.mul (get_stats_write_sectors s3) 512L;
+        rd_bytes = (get_stats_read_sectors s3) *** 512L;
+        wr_bytes = (get_stats_write_sectors s3) *** 512L;
         rd_avg_usecs =
           if (get_stats_read_reqs_completed s3) > 0L then
-            Int64.div (get_stats_read_total_ticks s3) (get_stats_read_reqs_completed s3)
+            (get_stats_read_total_ticks s3) /// (get_stats_read_reqs_completed s3)
           else 0L;
         wr_avg_usecs =
           if (get_stats_write_reqs_completed s3) > 0L then
-            Int64.div (get_stats_write_total_ticks s3) (get_stats_write_reqs_completed s3)
+            (get_stats_write_total_ticks s3) /// (get_stats_write_reqs_completed s3)
           else 0L;
-        io_throughput_read_mb = (to_float (get_stats_read_sectors s3 -- (opt get_stats_read_sectors last_s3))) *. 512. /. 1048576.;
-        io_throughput_write_mb = (to_float (get_stats_write_sectors s3 -- (opt get_stats_write_sectors last_s3))) *. 512. /. 1048576.;
-        iops_read = get_stats_read_reqs_completed s3 -- (opt get_stats_read_reqs_completed last_s3);
-        iops_write = get_stats_write_reqs_completed s3 -- (opt get_stats_write_reqs_completed last_s3);
-        iowait = to_float ((get_stats_read_total_ticks s3 ++ get_stats_write_total_ticks s3) -- (opt get_stats_read_total_ticks last_s3 ++ opt get_stats_write_total_ticks last_s3)) /. 1000000.0;
-        inflight = (get_stats_read_reqs_submitted s3 ++ get_stats_write_reqs_submitted s3) -- (opt get_stats_read_reqs_completed last_s3 ++ opt get_stats_write_reqs_completed last_s3);
+        io_throughput_read_mb = (to_float (get_stats_read_sectors s3 --- (opt get_stats_read_sectors last_s3))) *. 512. /. 1048576.;
+        io_throughput_write_mb = (to_float (get_stats_write_sectors s3 --- (opt get_stats_write_sectors last_s3))) *. 512. /. 1048576.;
+        iops_read = get_stats_read_reqs_completed s3 --- (opt get_stats_read_reqs_completed last_s3);
+        iops_write = get_stats_write_reqs_completed s3 --- (opt get_stats_write_reqs_completed last_s3);
+        iowait = to_float ((get_stats_read_total_ticks s3 +++ get_stats_write_total_ticks s3) --- (opt get_stats_read_total_ticks last_s3 +++ opt get_stats_write_total_ticks last_s3)) /. 1000000.0;
+        inflight = (get_stats_read_reqs_submitted s3 +++ get_stats_write_reqs_submitted s3) --- (opt get_stats_read_reqs_completed last_s3 +++ opt get_stats_write_reqs_completed last_s3);
       }
 
   let sumup (values : t list) : t =
-    let (++) = Int64.add in
     List.fold_left (fun acc v ->
         {
-          rd_bytes = acc.rd_bytes ++ v.rd_bytes;
-          rd_avg_usecs = acc.rd_avg_usecs ++ v.rd_avg_usecs;
-          wr_bytes = acc.wr_bytes ++ v.wr_bytes;
-          wr_avg_usecs = acc.wr_avg_usecs ++ v.wr_avg_usecs;
+          rd_bytes = acc.rd_bytes +++ v.rd_bytes;
+          rd_avg_usecs = acc.rd_avg_usecs +++ v.rd_avg_usecs;
+          wr_bytes = acc.wr_bytes +++ v.wr_bytes;
+          wr_avg_usecs = acc.wr_avg_usecs +++ v.wr_avg_usecs;
           io_throughput_read_mb = acc.io_throughput_read_mb +. v.io_throughput_read_mb;
           io_throughput_write_mb = acc.io_throughput_write_mb +. v.io_throughput_write_mb;
-          iops_read = acc.iops_read ++ v.iops_read;
-          iops_write = acc.iops_write ++ v.iops_write;
+          iops_read = acc.iops_read +++ v.iops_read;
+          iops_write = acc.iops_write +++ v.iops_write;
           iowait = acc.iowait +. v.iowait;
-          inflight = acc.inflight ++ v.inflight;
+          inflight = acc.inflight +++ v.inflight;
         }) empty values
 
   let make_ds ~owner ~name ~key_format ?(unknown = false) (value : t) =
@@ -605,7 +609,7 @@ module Stats_value = struct
       ; Rrd.VT_Float (value.io_throughput_read_mb +. value.io_throughput_write_mb)
       ; Rrd.VT_Int64 value.iops_read
       ; Rrd.VT_Int64 value.iops_write
-      ; Rrd.VT_Int64 (Int64.add value.iops_read value.iops_write)
+      ; Rrd.VT_Int64 (value.iops_read +++ value.iops_write)
       ; Rrd.VT_Float value.iowait
       ; Rrd.VT_Int64 value.inflight
       ] in
@@ -629,7 +633,7 @@ module Iostats_value = struct
     }
 
   let make iostats _last_iostats stats_blktap3 last_stats_blktap3 : t =
-    let (++) = Int64.add and (--) = Int64.sub and to_float = Int64.to_float in
+    let to_float = Int64.to_float in
     (* stats_blktap3 and stats won't both present at a time *)
     match stats_blktap3 with
     | None ->
@@ -641,11 +645,11 @@ module Iostats_value = struct
     | Some s3 ->
       let last_s3 = last_stats_blktap3 in
       let opt f x = match x with | None -> 0L | Some x' -> f x' in
-      let s3_usecs = (get_stats_read_total_ticks s3 ++ get_stats_write_total_ticks s3) -- (opt get_stats_read_total_ticks last_s3 ++ opt get_stats_write_total_ticks last_s3) in
-      let s3_count = (get_stats_read_reqs_completed s3 ++ get_stats_write_reqs_completed s3) -- (opt get_stats_read_reqs_completed last_s3 ++ opt get_stats_write_reqs_completed last_s3) in
+      let s3_usecs = (get_stats_read_total_ticks s3 +++ get_stats_write_total_ticks s3) --- (opt get_stats_read_total_ticks last_s3 +++ opt get_stats_write_total_ticks last_s3) in
+      let s3_count = (get_stats_read_reqs_completed s3 +++ get_stats_write_reqs_completed s3) --- (opt get_stats_read_reqs_completed last_s3 +++ opt get_stats_write_reqs_completed last_s3) in
       let s3_latency_average = if s3_count = 0L then 0. else to_float s3_usecs /. to_float s3_count /. 1000.0 in
       (* refer to https://github.com/xenserver/xsiostat for the calculation below *)
-      let avgqu_sz = to_float ((get_stats_read_total_ticks s3 ++ get_stats_write_total_ticks s3) -- (opt get_stats_read_total_ticks last_s3 ++ opt get_stats_write_total_ticks last_s3)) /. 1000_000.0 in
+      let avgqu_sz = to_float ((get_stats_read_total_ticks s3 +++ get_stats_write_total_ticks s3) --- (opt get_stats_read_total_ticks last_s3 +++ opt get_stats_write_total_ticks last_s3)) /. 1000_000.0 in
       {
         latency = s3_latency_average;
         (* divide by the interval as the ds-type is Gauge *)
@@ -796,10 +800,9 @@ let gen_metrics () =
   (* Get the blktap3 stats and iterate the stats list to count the
      number of tapdisks in low memory mode *)
   let data_sources_low_mem_mode =
-    let (++) = Int64.add in
     let count = List.fold_left (fun acc ((_, _), stats) ->
       if (Int64.logand (get_stats_flags stats) Blktap3_stats.flag_low_mem_mode) = Blktap3_stats.flag_low_mem_mode then
-        acc ++ 1L
+        acc +++ 1L
       else
         acc
       ) 0L domid_devid_to_stats_blktap3
