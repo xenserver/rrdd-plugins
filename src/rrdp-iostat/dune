@@ -2,10 +2,13 @@
   (name rrdp_iostat)
   (public_name xcp-rrdd-iostat)
   (libraries
+    rpclib
     rrdd-plugin
     rrdd-plugins.libs
+    xapi-stdext-pervasives
     xapi-stdext-std
     xapi-stdext-unix
+    xen-api-client
     str
     threads
     uuid

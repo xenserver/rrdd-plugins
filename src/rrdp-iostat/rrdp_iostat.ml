@@ -15,6 +15,7 @@
 open Xapi_stdext_std
 open Xapi_stdext_unix
 open Xapi_stdext_threads.Threadext
+module Pervasiveext = Xapi_stdext_pervasives.Pervasiveext
 
 open Rrdd_plugin
 open Blktap3_stats
@@ -537,7 +538,7 @@ module Stats_value = struct
           inflight = acc.inflight ++ v.inflight;
         }) empty values
 
-  let make_ds ~owner ~name ~key_format (value : t) =
+  let make_ds ~owner ~name ~key_format ?(unknown = false) (value : t) =
     let fmt = Printf.sprintf in
     let bases =
     [ { name = key_format "read"
@@ -589,21 +590,26 @@ module Stats_value = struct
       ; ty = Rrd.Gauge; units = "requests"; min = 0.
       }
     ] in
-    let values =
-    [ Rrd.VT_Int64 value.rd_bytes
-    ; Rrd.VT_Int64 value.wr_bytes
-    ; Rrd.VT_Int64 value.rd_avg_usecs
-    ; Rrd.VT_Int64 value.wr_avg_usecs
-    ; Rrd.VT_Float value.io_throughput_read_mb
-    ; Rrd.VT_Float value.io_throughput_write_mb
-    ; Rrd.VT_Float (value.io_throughput_read_mb +. value.io_throughput_write_mb)
-    ; Rrd.VT_Int64 value.iops_read
-    ; Rrd.VT_Int64 value.iops_write
-    ; Rrd.VT_Int64 (Int64.add value.iops_read value.iops_write)
-    ; Rrd.VT_Float value.iowait
-    ; Rrd.VT_Int64 value.inflight
-    ] in
+    let values = match unknown with
+    | true -> List.init (List.length bases) (fun _ -> Rrd.VT_Unknown)
+    | false ->
+      [ Rrd.VT_Int64 value.rd_bytes
+      ; Rrd.VT_Int64 value.wr_bytes
+      ; Rrd.VT_Int64 value.rd_avg_usecs
+      ; Rrd.VT_Int64 value.wr_avg_usecs
+      ; Rrd.VT_Float value.io_throughput_read_mb
+      ; Rrd.VT_Float value.io_throughput_write_mb
+      ; Rrd.VT_Float (value.io_throughput_read_mb +. value.io_throughput_write_mb)
+      ; Rrd.VT_Int64 value.iops_read
+      ; Rrd.VT_Int64 value.iops_write
+      ; Rrd.VT_Int64 (Int64.add value.iops_read value.iops_write)
+      ; Rrd.VT_Float value.iowait
+      ; Rrd.VT_Int64 value.inflight
+      ] in
     make_dss_with_bases ~owner ~values ~bases
+
+  let make_unknown_ds ~owner ~name ~key_format =
+    make_ds ~owner ~name ~key_format ~unknown:true empty
 end
 
 module Iostats_value = struct
@@ -650,7 +656,7 @@ module Iostats_value = struct
           avgqu_sz = acc.avgqu_sz +. v.avgqu_sz;
         }) empty values
 
-  let [@warning "-27"] make_ds  ~owner ~name ~key_format (value : t) =
+  let [@warning "-27"] make_ds  ~owner ~name ~key_format ?(unknown = false) (value : t) =
     let bases =
     [ { name = (key_format "latency"); description = "Average I/O latency"
       ; ty = Rrd.Gauge; units = "milliseconds"; min = 0.
@@ -659,10 +665,34 @@ module Iostats_value = struct
       ; ty = Rrd.Gauge; units = "requests"; min = 0.
       }
     ] in
-    let values = [ Rrd.VT_Float value.latency; Rrd.VT_Float value.avgqu_sz ]
+    let values = match unknown with
+    | true  -> [ Rrd.VT_Unknown; Rrd.VT_Unknown ]
+    | false -> [ Rrd.VT_Float value.latency; Rrd.VT_Float value.avgqu_sz ]
     in
     make_dss_with_bases ~owner ~values ~bases
+
+  let make_unknown_ds ~owner ~name ~key_format =
+    make_ds ~owner ~name ~key_format ~unknown:true empty
 end
+
+
+let get_unplugged_srs () =
+  let rpc xml =
+    let open Xmlrpc_client in
+    XMLRPC_protocol.rpc ~srcstr:"rrdp-iostat" ~dststr:"xapi" ~transport:(Unix "/var/xapi/xapi") ~http:(xmlrpc ~version:"1.0" "/") xml
+  in
+  let session_id = XenAPI.Session.slave_local_login_with_password ~rpc ~uname:"" ~pwd:"" in
+  let query_for_unplugged_pbds () =
+    XenAPI.Session.get_this_host ~rpc ~session_id ~self:session_id
+    |> fun h -> XenAPI.Host.get_PBDs ~rpc ~session_id ~self:h
+    |> Listext.List.filter_map (fun pbd ->
+      match XenAPI.PBD.get_record ~rpc ~session_id ~self:pbd with
+      | {API.pBD_SR; pBD_currently_attached = attached; pBD_uuid; _} when not attached ->
+          Some (XenAPI.SR.get_uuid ~rpc ~session_id ~self:pBD_SR)
+      | _  -> None)
+  in
+  Pervasiveext.finally query_for_unplugged_pbds
+    (fun () -> XenAPI.Session.local_logout ~rpc ~session_id)
 
 let list_all_assocs key xs = List.map snd (List.filter (fun (k,_) -> k = key) xs)
 
@@ -733,6 +763,21 @@ let gen_metrics () =
   let sr_to_iostats_values = get_sr_to_stats_values ~stats_values:sr_vdi_to_iostats_values ~sum_fun:Iostats_value.sumup in
   let sr_to_stats_values   = get_sr_to_stats_values ~stats_values:sr_vdi_to_stats_values   ~sum_fun:Stats_value.sumup   in
 
+  (* CA-325582: report SRs that correspond to unplugged PBDs in this host
+   * otherwise rrdd will drop its metrics *)
+  let unplugged_srs = get_unplugged_srs () in
+
+  let unplugged_dss_iostats = List.map(
+      fun sr ->
+        let key_format key = Printf.sprintf "%s_%s" key (String.sub sr 0 8) in
+        Iostats_value.make_unknown_ds ~owner:Rrd.Host ~name:"SR" ~key_format
+    ) unplugged_srs in
+  let unplugged_dss_stats = List.map(
+      fun sr ->
+        let key_format key = Printf.sprintf "%s_%s" key (String.sub sr 0 8) in
+        Stats_value.make_unknown_ds ~owner:Rrd.Host ~name:"SR" ~key_format
+    ) unplugged_srs in
+
   (* create SR level data sources *)
   let data_sources_iostats = List.map (
       fun (sr, iostats_value) ->
@@ -794,8 +839,9 @@ let gen_metrics () =
   sr_vdi_to_last_stats_values := Some (to_hashtbl sr_vdi_to_stats);
   domid_devid_to_last_stats_blktap3 := Some domid_devid_to_stats_blktap3;
 
-  List.flatten (data_sources_stats @ data_sources_iostats @ data_sources_vm_stats @ data_sources_vm_iostats
-                @ data_sources_low_mem_mode)
+  List.flatten (data_sources_stats @ data_sources_iostats @ unplugged_dss_stats
+      @ unplugged_dss_iostats @ data_sources_vm_stats @ data_sources_vm_iostats
+      @ data_sources_low_mem_mode)
 
 let _ =
   initialise ();
