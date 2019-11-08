@@ -688,15 +688,24 @@ let get_unplugged_srs () =
   let session_id = XenAPI.Session.slave_local_login_with_password ~rpc ~uname:"" ~pwd:"" in
   let query_for_unplugged_pbds () =
     XenAPI.Session.get_this_host ~rpc ~session_id ~self:session_id
-    |> fun h -> XenAPI.Host.get_PBDs ~rpc ~session_id ~self:h
+    |> fun host -> XenAPI.Host.get_PBDs ~rpc ~session_id ~self:host
     |> Listext.List.filter_map (fun pbd ->
       match XenAPI.PBD.get_record ~rpc ~session_id ~self:pbd with
       | {API.pBD_SR; pBD_currently_attached = attached; pBD_uuid; _} when not attached ->
           Some (XenAPI.SR.get_uuid ~rpc ~session_id ~self:pBD_SR)
       | _  -> None)
   in
-  Pervasiveext.finally query_for_unplugged_pbds
-    (fun () -> XenAPI.Session.local_logout ~rpc ~session_id)
+  try
+    Pervasiveext.finally query_for_unplugged_pbds
+      (fun () -> XenAPI.Session.local_logout ~rpc ~session_id)
+  with
+  | Unix.Unix_error(Unix.ENOENT, "connect", _) ->
+    (* Xapi has not created the socket yet *)
+    []
+  | e ->
+    let msg = Printexc.to_string e in
+    D.warn "Failed to request unplugged SRs from XenAPI: %s" msg;
+    []
 
 let list_all_assocs key xs = List.map snd (List.filter (fun (k,_) -> k = key) xs)
 
