@@ -685,7 +685,7 @@ let get_unplugged_srs () =
     let open Xmlrpc_client in
     XMLRPC_protocol.rpc ~srcstr:"rrdp-iostat" ~dststr:"xapi" ~transport:(Unix "/var/xapi/xapi") ~http:(xmlrpc ~version:"1.0" "/") xml
   in
-  let session_id = XenAPI.Session.slave_local_login_with_password ~rpc ~uname:"" ~pwd:"" in
+  let session_id = XenAPI.Session.login_with_password ~rpc ~uname:"" ~pwd:"" ~version:"2.14" ~originator:"rrdp-iostat" in
   let query_for_unplugged_pbds () =
     XenAPI.Session.get_this_host ~rpc ~session_id ~self:session_id
     |> fun host -> XenAPI.Host.get_PBDs ~rpc ~session_id ~self:host
