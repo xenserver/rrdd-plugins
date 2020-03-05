@@ -627,8 +627,8 @@ module Iostats_value = struct
 				}
 
 	let accumulate (values : t list) : t =
-		let max acc v = { latency = Float.max acc.latency v.latency
-				; avgqu_sz = Float.max acc.avgqu_sz v.avgqu_sz
+		let max acc v = { latency = max acc.latency v.latency
+				; avgqu_sz = max acc.avgqu_sz v.avgqu_sz
 				}
 		in
 		List.fold_left max empty values
