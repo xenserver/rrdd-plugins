@@ -517,7 +517,7 @@ module Stats_value = struct
 					inflight = (s3.read_reqs_submitted ++ s3.write_reqs_submitted) -- (s3.read_reqs_completed ++ s3.write_reqs_completed);
 				}
 
-	let sumup (values : t list) : t =
+	let accumulate (values : t list) : t =
 		let (++) = Int64.add in
 		List.fold_left (fun acc v ->
 			{
@@ -626,12 +626,12 @@ module Iostats_value = struct
 					avgqu_sz = avgqu_sz /. 5.;
 				}
 
-	let sumup (values : t list) : t =
-		List.fold_left (fun acc v ->
-			{
-				latency = acc.latency +. v.latency;
-				avgqu_sz = acc.avgqu_sz +. v.avgqu_sz;
-			}) empty values
+	let accumulate (values : t list) : t =
+		let max acc v = { latency = Float.max acc.latency v.latency
+				; avgqu_sz = Float.max acc.avgqu_sz v.avgqu_sz
+				}
+		in
+		List.fold_left max empty values
 
 	let make_ds ~owner ~name ~key_format (value : t) =
 		let ds_make = Ds.ds_make ~default:true in
@@ -712,15 +712,15 @@ let gen_metrics () =
 		) sr_vdi_to_stats in
 
 	(* sum up to SR level stats values *)
-	let get_sr_to_stats_values ~stats_values ~sum_fun =
+	let get_sr_to_stats_values ~stats_values ~accumulate =
 		let sr_to_stats_values = sr_to_sth stats_values in
 		List.map (fun (sr, stats_values) ->
-			(sr, sum_fun stats_values)
+			(sr, accumulate stats_values)
 		) sr_to_stats_values
 	in
 
-	let sr_to_iostats_values = get_sr_to_stats_values ~stats_values:sr_vdi_to_iostats_values ~sum_fun:Iostats_value.sumup in
-	let sr_to_stats_values   = get_sr_to_stats_values ~stats_values:sr_vdi_to_stats_values   ~sum_fun:Stats_value.sumup   in
+	let sr_to_iostats_values = get_sr_to_stats_values ~stats_values:sr_vdi_to_iostats_values ~accumulate:Iostats_value.accumulate in
+	let sr_to_stats_values   = get_sr_to_stats_values ~stats_values:sr_vdi_to_stats_values   ~accumulate:Stats_value.accumulate in
 
 	(* create SR level data sources *)
 	let data_sources_iostats = List.map (
