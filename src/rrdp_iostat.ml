@@ -480,19 +480,35 @@ module Stats_value = struct
 		| Some s3 ->
 				let last_s3 = match last_stats_blktap3 with
 				| None -> Blktap3_stats_wrapper.empty
-				| Some last_s3 -> last_s3
+				| Some last_s3 -> last_s3 in
+				let fold ~none ~some = function Some v -> some v | None -> none in
+				let open Blktap3_stats in
+				let avg_reqs_completed_last_five_secs get_reqs_completed get_total_ticks =
+					last_stats_blktap3 |> fold ~none:0L (* we don't have data from 5 secs ago, so give up *)
+						~some:(fun last_s3 ->
+								(* a 'tick' is the time spent waiting on reads (or writes, dep on context), in usec *)
+								let num_reqs_in_last_five_secs =
+									let now = get_reqs_completed s3 in
+									let last = get_reqs_completed last_s3 in
+									if now < last then begin
+										D.error "Stats_value.make: read_reqs_completed has decreased: now: %Li, last: %Li" now last;
+										0L
+									end else
+										now -- last
+								in
+								let num_ticks_in_last_5_secs = get_total_ticks s3 -- get_total_ticks last_s3 in
+								if num_reqs_in_last_five_secs = 0L then 0L else Int64.div num_ticks_in_last_5_secs num_reqs_in_last_five_secs
+							)
 				in
 				{
 					rd_bytes = Int64.mul s3.read_sectors 512L;
 					wr_bytes = Int64.mul s3.write_sectors 512L;
-					rd_avg_usecs =
-						if s3.read_reqs_completed > 0L then
-							Int64.div s3.read_total_ticks s3.read_reqs_completed
-						else 0L;
-					wr_avg_usecs =
-						if s3.write_reqs_completed > 0L then
-							Int64.div s3.write_total_ticks s3.write_reqs_completed
-						else 0L;
+					rd_avg_usecs = avg_reqs_completed_last_five_secs
+						(fun s3 -> s3.read_reqs_completed)
+						(fun s3 -> s3.read_total_ticks);
+					wr_avg_usecs = avg_reqs_completed_last_five_secs
+						(fun s3 -> s3.write_reqs_completed)
+						(fun s3 -> s3.write_total_ticks);
 					io_throughput_read_mb = (to_float (s3.read_sectors -- last_s3.read_sectors)) *. 512. /. 1048576.;
 					io_throughput_write_mb = (to_float (s3.write_sectors -- last_s3.write_sectors)) *. 512. /. 1048576.;
 					iops_read = s3.read_reqs_completed -- last_s3.read_reqs_completed;
