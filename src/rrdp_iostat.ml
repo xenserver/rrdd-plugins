@@ -617,7 +617,7 @@ module Iostats_value = struct
 				in
 				let s3_usecs = (s3.read_total_ticks ++ s3.write_total_ticks) -- (last_s3.read_total_ticks ++ last_s3.write_total_ticks) in
 				let s3_count = (s3.read_reqs_completed ++ s3.write_reqs_completed) -- (last_s3.read_reqs_completed ++ last_s3.write_reqs_completed) in
-				let s3_latency_average = if s3_count = 0L then 0. else to_float s3_usecs /. to_float s3_count /. 1000.0 in
+				let s3_latency_average = if s3_count = 0L then 0. else to_float s3_usecs /. to_float s3_count in
 				(* refer to https://github.com/xenserver/xsiostat for the calculation below *)
 				let avgqu_sz = to_float ((s3.read_total_ticks ++ s3.write_total_ticks) -- (last_s3.read_total_ticks ++ last_s3.write_total_ticks)) /. 1000_000.0 in
 				{
@@ -639,7 +639,7 @@ module Iostats_value = struct
 			owner, ds_make ~name:(key_format "latency")
 				~description:"Average I/O latency"
 				~value:(Rrd.VT_Float value.latency)
-				~ty:Rrd.Gauge ~units:"milliseconds" ~min:0. ();
+				~ty:Rrd.Gauge ~units:"μs" ~min:0. ();
 			owner, ds_make ~name:(key_format "avgqu_sz")
 				~description:"Average I/O queue size"
 				~value:(Rrd.VT_Float value.avgqu_sz)
