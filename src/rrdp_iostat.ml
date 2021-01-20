@@ -517,7 +517,7 @@ module Stats_value = struct
 					inflight = (s3.read_reqs_submitted ++ s3.write_reqs_submitted) -- (s3.read_reqs_completed ++ s3.write_reqs_completed);
 				}
 
-	let sumup (values : t list) : t =
+	let accumulate (values : t list) : t =
 		let (++) = Int64.add in
 		List.fold_left (fun acc v ->
 			{
@@ -617,7 +617,7 @@ module Iostats_value = struct
 				in
 				let s3_usecs = (s3.read_total_ticks ++ s3.write_total_ticks) -- (last_s3.read_total_ticks ++ last_s3.write_total_ticks) in
 				let s3_count = (s3.read_reqs_completed ++ s3.write_reqs_completed) -- (last_s3.read_reqs_completed ++ last_s3.write_reqs_completed) in
-				let s3_latency_average = if s3_count = 0L then 0. else to_float s3_usecs /. to_float s3_count /. 1000.0 in
+				let s3_latency_average = if s3_count = 0L then 0. else to_float s3_usecs /. to_float s3_count in
 				(* refer to https://github.com/xenserver/xsiostat for the calculation below *)
 				let avgqu_sz = to_float ((s3.read_total_ticks ++ s3.write_total_ticks) -- (last_s3.read_total_ticks ++ last_s3.write_total_ticks)) /. 1000_000.0 in
 				{
@@ -626,12 +626,12 @@ module Iostats_value = struct
 					avgqu_sz = avgqu_sz /. 5.;
 				}
 
-	let sumup (values : t list) : t =
-		List.fold_left (fun acc v ->
-			{
-				latency = acc.latency +. v.latency;
-				avgqu_sz = acc.avgqu_sz +. v.avgqu_sz;
-			}) empty values
+	let accumulate (values : t list) : t =
+		let max acc v = { latency = max acc.latency v.latency
+				; avgqu_sz = max acc.avgqu_sz v.avgqu_sz
+				}
+		in
+		List.fold_left max empty values
 
 	let make_ds ~owner ~name ~key_format (value : t) =
 		let ds_make = Ds.ds_make ~default:true in
@@ -639,7 +639,7 @@ module Iostats_value = struct
 			owner, ds_make ~name:(key_format "latency")
 				~description:"Average I/O latency"
 				~value:(Rrd.VT_Float value.latency)
-				~ty:Rrd.Gauge ~units:"milliseconds" ~min:0. ();
+				~ty:Rrd.Gauge ~units:"μs" ~min:0. ();
 			owner, ds_make ~name:(key_format "avgqu_sz")
 				~description:"Average I/O queue size"
 				~value:(Rrd.VT_Float value.avgqu_sz)
@@ -712,15 +712,15 @@ let gen_metrics () =
 		) sr_vdi_to_stats in
 
 	(* sum up to SR level stats values *)
-	let get_sr_to_stats_values ~stats_values ~sum_fun =
+	let get_sr_to_stats_values ~stats_values ~accumulate =
 		let sr_to_stats_values = sr_to_sth stats_values in
 		List.map (fun (sr, stats_values) ->
-			(sr, sum_fun stats_values)
+			(sr, accumulate stats_values)
 		) sr_to_stats_values
 	in
 
-	let sr_to_iostats_values = get_sr_to_stats_values ~stats_values:sr_vdi_to_iostats_values ~sum_fun:Iostats_value.sumup in
-	let sr_to_stats_values   = get_sr_to_stats_values ~stats_values:sr_vdi_to_stats_values   ~sum_fun:Stats_value.sumup   in
+	let sr_to_iostats_values = get_sr_to_stats_values ~stats_values:sr_vdi_to_iostats_values ~accumulate:Iostats_value.accumulate in
+	let sr_to_stats_values   = get_sr_to_stats_values ~stats_values:sr_vdi_to_stats_values   ~accumulate:Stats_value.accumulate in
 
 	(* create SR level data sources *)
 	let data_sources_iostats = List.map (
